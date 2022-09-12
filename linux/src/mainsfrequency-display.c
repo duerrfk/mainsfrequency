@@ -23,7 +23,7 @@ int main(int argc, char *argv[])
      char ttydev[MAX_TTYDEV_SIZE];
      speed_t ttyspeed;
      
-     char c;
+     int c;
      int intarg;
      memset(ttydev, 0, MAX_TTYDEV_SIZE);
      while ((c = getopt (argc, argv, "d:s:")) != -1) {
@@ -95,6 +95,8 @@ int main(int argc, char *argv[])
 	  }
 
 	  // TODO
+
+	  
      }
      
      return 0;

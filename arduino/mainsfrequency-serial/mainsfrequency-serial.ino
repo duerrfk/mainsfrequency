@@ -9,6 +9,9 @@
 // Send sample packets with these many samples.
 #define BATCHSIZE 10
 
+// Maximum packet size
+#define MAX_PKTSIZE 1500
+
 // SLIP special character codes.
 #define SLIP_END             0300    /* indicates end of packet */
 #define SLIP_ESC             0333    /* indicates byte stuffing */
@@ -23,10 +26,17 @@ typedef struct {
 } ringbuffer_t;
 
 typedef struct __attribute__((__packed__)) {
-    uint8_t type;
-    uint32_t samples[BATCHSIZE];
-    uint16_t crcsum; 
-} pkt_samples_t;
+    uint16_t type;
+    uint16_t payload_length;
+} pkt_header_t;
+
+typedef struct __attribute__((__packed__)) {
+    uint16_t crcsum;
+} pkt_trailer_t;
+
+typedef struct {
+    unsigned char buffer[MAX_PKTSIZE]; // header, payload, trailer
+} pkt_t;
 
 volatile ringbuffer_t rb;
 
@@ -35,6 +45,23 @@ volatile short wavecnt;
 
 // 16 bit CRC-CCITT: polynomial 0x1021 with start value 0x0000.
 CRC16 crc;
+
+inline pkt_header_t *get_pkt_header(pkt_t *pkt)
+{
+    return ((pkt_header_t *) pkt);
+}
+
+inline unsigned char *get_pkt_payload(pkt_t *pkt) 
+{
+    return (&pkt->buffer[sizeof(pkt_header_t)]);  
+}
+
+inline pkt_trailer_t *get_pkt_trailer(pkt_t *pkt)
+{
+    pkt_header_t *pkt_header = get_pkt_header(pkt);
+    size_t traileroffset = sizeof(pkt_header_t) + pkt_header->payload_length;
+    return ((pkt_trailer_t *) &pkt->buffer[traileroffset]);
+}
 
 void setup() 
 {
@@ -181,9 +208,10 @@ void TC0_Handler()
  * Send a packet of serial using SLIP protocol.
  * The following code is adapted from RFC 1055.
  */
-void send_packet_slip(uint8_t *data, size_t len)
+void send_packet_slip(const void *data, size_t len)
 {
-
+    const unsigned char *d = (unsigned char *) data;
+    
     // Send an initial END character to flush out any data that may
     // have accumulated in the receiver due to line noise.
     // This might result in zero length packets on receiver side,
@@ -193,7 +221,7 @@ void send_packet_slip(uint8_t *data, size_t len)
     // For each byte in the packet, send the appropriate character
     // sequence.
     while (len--) {
-        switch(*data) {
+        switch (*d) {
             // If it's the same code as an END character, we send a
             // special two character code so as not to make the
             // receiver think we sent an END.
@@ -209,9 +237,9 @@ void send_packet_slip(uint8_t *data, size_t len)
                 Serial.write(SLIP_ESC_ESC);
                 break;
             default:
-                Serial.write(*data);
+                Serial.write(*d);
         }
-        data++;
+        d++;
     }
 
     // Tell the receiver that we're done sending the packet.
@@ -220,9 +248,9 @@ void send_packet_slip(uint8_t *data, size_t len)
 
 void loop() 
 {
-    pkt_samples_t pkt_samples;    
+    pkt_t pkt_samples; // a packet with samples
     // Directly write samples into packet.
-    uint32_t *batch = pkt_samples.samples;
+    uint32_t *batch = (uint32_t *) get_pkt_payload(&pkt_samples);
     size_t nbatch = 0;
 
     boolean first_value = true;
@@ -234,7 +262,7 @@ void loop()
         while (rb.n == 0);
 
         // There is at least one data item in the ringbuffer.
-        uint32_t ts = rb.tail;
+        uint32_t ts = rb.data[rb.tail];
         rb.tail = ((rb.tail+1) & RINGBUFFERMOD);
         // Disable interrupts for atomic read-modify-write (other reader/writer is ISR).
         noInterrupts();
@@ -261,16 +289,19 @@ void loop()
         batch[nbatch++] = interval;
         if (nbatch == BATCHSIZE) {
             // Batch is complete -> send packet
+                       
+            // Fill in packet header.
+            pkt_header_t *pkt_header = get_pkt_header(&pkt_samples);
+            pkt_header->type = PKTTYPE_SAMPLES;
+            pkt_header->payload_length = BATCHSIZE*sizeof(uint32_t);
             
-            // Add packet type at front of packet.
-            pkt_samples.type = PKTTYPE_SAMPLES;
-          
-            // Add 16 bit CRC at end of packet.
-            size_t payload_size = sizeof(pkt_samples)-sizeof(pkt_samples.crcsum);
-            crc.add((uint8_t *) &pkt_samples, payload_size); 
-            pkt_samples.crcsum = crc.getCRC(); 
-            
-            send_packet_slip((uint8_t *) &pkt_samples, sizeof(pkt_samples));
+            // Fill in packet trailer.
+            pkt_trailer_t *pkt_trailer = get_pkt_trailer(&pkt_samples);
+            crc.add(pkt_samples.buffer, sizeof(pkt_header_t)+pkt_header->payload_length);
+            pkt_trailer->crcsum = crc.getCRC();
+
+            size_t pkt_len = sizeof(pkt_header_t) + sizeof(pkt_trailer_t) + pkt_header->payload_length;
+            send_packet_slip(pkt_samples.buffer, pkt_len);
             
             crc.reset();
             nbatch = 0;

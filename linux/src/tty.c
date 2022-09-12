@@ -1,11 +1,11 @@
-#include "ttyutil.h"
+#include "tty.h"
 #include <termios.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
-int ttyutil_initraw(const char *dev, speed_t speed)
+int tty_init_raw(const char *dev, speed_t speed)
 {
      int fd = open(dev, O_RDWR);
      if (fd < 0)

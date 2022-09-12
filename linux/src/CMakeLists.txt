@@ -7,7 +7,12 @@ if (STDTHREADS_LIB)
   set (LIBS ${LIBS} ${STDTHREADS_LIB})
 endif()
 
-add_executable (mainsfrequency-display mainsfrequency-display.c ttyutil.h ttyutil.c)
+include_directories(../../../libcrc/include)
+link_directories(../../../libcrc/lib)
+
+add_executable (mainsfrequency-display mainsfrequency-display.c tty.h tty.c slip.h slip.c crc.h crc.c)
 
 set (CMAKE_C_STANDARD 11)
+target_link_libraries (mainsfrequency-display libcrc.a)
+
 #target_link_libraries (c11_threads ${CMAKE_THREAD_LIBS_INIT} ${LIBS})

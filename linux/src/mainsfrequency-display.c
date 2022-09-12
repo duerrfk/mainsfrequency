@@ -94,15 +94,6 @@ int main(int argc, char *argv[])
 	       continue;
 	  }
 
-	  // Checksum OK: process packet data
-	  for (unsigned int i = 0; i < 256; i++) {
-	       if (pktbuffer[i] != i) {
-		    fprintf(stderr, "Error: invalid packet data (ignoring packet)\n");
-		    break;
-	       }
-	  }
-	  printf("Packet OK\n");
-	  
 	  // TODO
      }
      

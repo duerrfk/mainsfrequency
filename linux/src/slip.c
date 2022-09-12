@@ -10,7 +10,7 @@
 
 static int get_next_byte(int fd, unsigned char *buffer, size_t buffersize, size_t *len, size_t *pos)
 {
-     if (len == pos) {
+     if (*len == *pos) {
 	  // All bytes from buffer have been consumed -> refill buffer
 	  ssize_t nread = read(fd, buffer, BUFFER_SIZE);
 	  if (nread < 0)
@@ -26,7 +26,7 @@ static int get_next_byte(int fd, unsigned char *buffer, size_t buffersize, size_
 
      // Buffer is not empty here.
 
-     int c = buffer[*pos++];
+     int c = buffer[(*pos)++];
      
      return c;
 }

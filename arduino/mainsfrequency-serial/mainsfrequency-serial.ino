@@ -25,7 +25,7 @@ typedef struct {
 typedef struct __attribute__((__packed__)) {
     uint8_t type;
     uint32_t samples[BATCHSIZE];
-    uint16_t crcsum;
+    uint16_t crcsum; 
 } pkt_samples_t;
 
 volatile ringbuffer_t rb;
@@ -33,6 +33,7 @@ volatile ringbuffer_t rb;
 volatile boolean ledstate;
 volatile short wavecnt;
 
+// 16 bit CRC-CCITT: polynomial 0x1021 with start value 0x0000.
 CRC16 crc;
 
 void setup() 
@@ -41,8 +42,8 @@ void setup()
 
     rb.head = rb.tail = rb.n = 0;
 
-    // We use the LED to signal a fatal error and to blink once per second after
-    // capturing 50 waves.
+    // We use the LED to signal a fatal error (constantly on) 
+    // and to blink once per second after capturing 50 waves during normal operation.
     ledstate = false;
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, ledstate);
@@ -266,7 +267,7 @@ void loop()
           
             // Add 16 bit CRC at end of packet.
             size_t payload_size = sizeof(pkt_samples)-sizeof(pkt_samples.crcsum);
-            crc.add((uint8_t *) &pkt_samples, payload_size);
+            crc.add((uint8_t *) &pkt_samples, payload_size); 
             pkt_samples.crcsum = crc.getCRC(); 
             
             send_packet_slip((uint8_t *) &pkt_samples, sizeof(pkt_samples));

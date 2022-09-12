@@ -7,8 +7,8 @@ if (STDTHREADS_LIB)
   set (LIBS ${LIBS} ${STDTHREADS_LIB})
 endif()
 
-include_directories(../../../libcrc/include)
-link_directories(../../../libcrc/lib)
+include_directories(../../libcrc/include)
+link_directories(../../libcrc/lib)
 
 add_executable (mainsfrequency-display mainsfrequency-display.c tty.h tty.c slip.h slip.c crc.h crc.c)
 

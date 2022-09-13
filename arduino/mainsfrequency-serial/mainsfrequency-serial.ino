@@ -5,6 +5,7 @@
 
 // Different packet types to transport different data.
 #define PKTTYPE_SAMPLES 0 /* samples packet */
+#define PKTTYPE_ONEPPS 1 /* 1-pps calibration packet */
 
 // Send sample packets with these many samples.
 #define BATCHSIZE 10
@@ -38,7 +39,8 @@ typedef struct {
     unsigned char buffer[MAX_PKTSIZE]; // header, payload, trailer
 } pkt_t;
 
-volatile ringbuffer_t rb;
+volatile ringbuffer_t rb_samples;
+volatile ringbuffer_t rb_onepps;
 
 volatile boolean ledstate;
 volatile short wavecnt;
@@ -67,8 +69,9 @@ void setup()
 {
     Serial.begin(115200);
 
-    rb.head = rb.tail = rb.n = 0;
-
+    rb_samples.head = rb_samples.tail = rb_samples.n = 0;
+    rb_onepps.head = rb_onepps.tail = rb_onepps.n = 0;
+     
     // We use the LED to signal a fatal error (constantly on) 
     // and to blink once per second after capturing 50 waves during normal operation.
     ledstate = false;
@@ -80,9 +83,10 @@ void setup()
     // + TC0->TC_CHANNEL[0]...
     // + TC0->TC_CHANNEL[1]...
     // + etc.
-    // We will use TC0, channel 0 for sampling frequencies. 
+    // We will use TC0, channel 0 (sometimes denoted as TC0) for sampling frequencies. 
+    // We will use TC2, channel 0 (sometime denoted as TC6) for sampling 1 pps calibration signals from GPS.
 
-    // We use TIOA0 (PB25, Arduino Due pin #2) as external trigger.
+    // We use TIOA0 (PB25, Arduino Due pin #2) as external trigger for wave sampling.
     // Set the pin to peripheral mode.
     // Disable PIO control of the pin via PIO Disable Register (PDR);
     // let peripheral control the pin.
@@ -90,16 +94,26 @@ void setup()
     // Set pin to peripheral function B through AB Select Register
     // (cf. Table 36-4).
     PIOB->PIO_ABSR |= PIO_ABSR_P25;                       
+
+    // We use TIOA6 (PC25, Arduino Due pin #5) as external trigger for 1 pps signal.
+    // Set the pin to peripheral mode.
+    // Disable PIO control of the pin via PIO Disable Register (PDR);
+    // let peripheral control the pin.
+    PIOC->PIO_PDR |= PIO_PDR_P25; 
+    // Set pin to peripheral function B through AB Select Register
+    // (cf. Table 36-4).
+    PIOC->PIO_ABSR |= PIO_ABSR_P25;
     
     // Enable peripheral clock for Timer Counter 0, Channel 0.
-    // Note: Here, ID_TC0, ID_TC1, etc. denote combinations of 
-    // timer counters and channels as follows: 
-    // ID_TC0 = Timer Counter 0, Channel 0 (this is what we want)
-    // ID_TC1 = Timer Counter 1, Channel 1
-    // etc.
-    //pmc_enable_periph_clk(ID_TC0); 
+    // PCER = Peripheral Clock Enable Register
+    // For the PID number, refer to Table 9-1 (PID27 is TC0, Channel 0)
     PMC->PMC_PCER0 |= PMC_PCER0_PID27; 
 
+    // Enable peripheral clock for Timer Counter 2, Channel 0.
+    // PCER = Peripheral Clock Enable Register
+    // For the PID number, refer to Table 9-1 (PID 33 is TC2, Channel 0)
+    PMC->PMC_PCER1 |= PMC_PCER1_PID33; 
+    
     // TC is clocked through the Power Management Controller (PMC). 
     // In order to write CMR below, we need to disable its write protection:
     // Bits 8-31: Write Protection Key (WPKEY) 0x54494D 
@@ -110,6 +124,7 @@ void setup()
     // Disable clock through TC Clock Control Register (CCR) 
     // while configuring.  
     TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKDIS;                           
+    TC2->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKDIS;
     
     // TC Channel Mode Register (CMR): Capture Mode (WAVE bit unset)
     // TC_CMR_TCCLKS_TIMER_CLOCK1: select internal MCK/2 clock signal
@@ -121,27 +136,41 @@ void setup()
         TC_CMR_ABETRG |
         TC_CMR_LDRA_RISING |
         TC_CMR_LDRB_FALLING;
-
+    TC2->TC_CHANNEL[0].TC_CMR = 
+        TC_CMR_TCCLKS_TIMER_CLOCK1  |
+        TC_CMR_ABETRG |
+        TC_CMR_LDRA_RISING |
+        TC_CMR_LDRB_FALLING;
+        
     // Trigger interrupts when RA is loaded.
     TC0->TC_CHANNEL[0].TC_IER |= TC_IER_LDRAS;
+    TC2->TC_CHANNEL[0].TC_IER |= TC_IER_LDRAS;
 
     // Configure interrupts.
     NVIC_DisableIRQ(TC0_IRQn);
+    NVIC_DisableIRQ(TC2_IRQn);
     NVIC_ClearPendingIRQ(TC0_IRQn); // clear pending interrupts
+    NVIC_ClearPendingIRQ(TC2_IRQn); // clear pending interrupts
     NVIC_SetPriority(TC0_IRQn, 0); // TC interrupt has highest priority
+    NVIC_SetPriority(TC2_IRQn, 0); // TC interrupt has highest priority
     NVIC_SetPriority(SysTick_IRQn, 15); // sys-tick interrupts have lower priority
     NVIC_EnableIRQ(TC0_IRQn); // enable interrupts
+    NVIC_EnableIRQ(TC2_IRQn); // enable interrupts
 
     // To avoid triggering an overrun error on the first load of RA or RB,
     // we clear the status register and load RA and RB. 
     // Read and clear status register SR. 
     uint32_t stat = TC0->TC_CHANNEL[0].TC_SR;
+    stat = TC2->TC_CHANNEL[0].TC_SR;
     // Read RA and RB.
     uint32_t ra = TC0->TC_CHANNEL[0].TC_RA;
+    ra = TC2->TC_CHANNEL[0].TC_RA;
     uint32_t rb = TC0->TC_CHANNEL[0].TC_RB;
+    rb = TC2->TC_CHANNEL[0].TC_RB;
     
     // Enable clock through TC Clock Control Register (CCR) and software trigger.
     TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_SWTRG | TC_CCR_CLKEN;
+    TC2->TC_CHANNEL[0].TC_CCR = TC_CCR_SWTRG | TC_CCR_CLKEN;
 }
 
 /**
@@ -149,10 +178,14 @@ void setup()
  */
 void die() 
 {
-    // Signal error to user via LED.
-    digitalWrite(LED_BUILTIN, HIGH);
     // Halt
-    while (true);
+    while (1) {
+        // Signal error to user via fast-blinking LED.
+        digitalWrite(LED_BUILTIN, HIGH);
+        delay(250);
+        digitalWrite(LED_BUILTIN, LOW); 
+        delay(250);
+    }
 }
 
 /**
@@ -179,16 +212,16 @@ void TC0_Handler()
         
         // Copy timestamp value to ring buffer.
         // Reading rb.n is safe since reading a single byte is atomic.
-        if (rb.n == RINGBUFFERSIZE) {
+        if (rb_samples.n == RINGBUFFERSIZE) {
             // Consumer is too slow to process data produced here.
             // This must never happen.
             die();
         }
-        rb.data[rb.head] = ra;
-        rb.head = ((rb.head+1) & RINGBUFFERMOD);
+        rb_samples.data[rb_samples.head] = ra;
+        rb_samples.head = ((rb_samples.head+1) & RINGBUFFERMOD);
         // Read-modify-write in the ISR is safe (atomic) since the ISR
         // cannot be interrupted.
-        rb.n++;
+        rb_samples.n++;
 
         // Blink LED once per second.
         wavecnt++;
@@ -201,6 +234,47 @@ void TC0_Handler()
     
     if (stat & TC_SR_LDRBS) {
         uint32_t rb = TC0->TC_CHANNEL[0].TC_RB;
+    }
+}
+
+/**
+ * Interrupt handler for Timer Counter 0. 
+ */
+void TC6_Handler() 
+{
+    uint32_t stat; // status
+    
+    // Read status register SR (SR will be reset after read). 
+    stat = TC2->TC_CHANNEL[0].TC_SR;
+
+    // Check for load overrun (loading at least twice in a row without reading).
+    if (stat & TC_SR_LOVRS) {
+        // Lost some values because ISR handling is too slow.
+        // This must never happen.
+        die();
+    }
+
+    // Interrupt fired by loading RA (LDRAS)?
+    if (stat & TC_SR_LDRAS) {
+        // Get timestamp counter value from RA.
+        uint32_t ra = TC2->TC_CHANNEL[0].TC_RA;
+        
+        // Copy timestamp value to ring buffer.
+        // Reading rb.n is safe since reading a single byte is atomic.
+        if (rb_onepps.n == RINGBUFFERSIZE) {
+            // Consumer is too slow to process data produced here.
+            // This must never happen.
+            die();
+        }
+        rb_onepps.data[rb_onepps.head] = ra;
+        rb_onepps.head = ((rb_onepps.head+1) & RINGBUFFERMOD);
+        // Read-modify-write in the ISR is safe (atomic) since the ISR
+        // cannot be interrupted.
+        rb_onepps.n++;
+    }
+    
+    if (stat & TC_SR_LDRBS) {
+        uint32_t rb = TC2->TC_CHANNEL[0].TC_RB;
     }
 }
 
@@ -249,62 +323,113 @@ void send_packet_slip(const void *data, size_t len)
 void loop() 
 {
     pkt_t pkt_samples; // a packet with samples
+    pkt_t pkt_onepps; // a packet with 1-pps calibration values
     // Directly write samples into packet.
     uint32_t *batch = (uint32_t *) get_pkt_payload(&pkt_samples);
     size_t nbatch = 0;
 
-    boolean first_value = true;
-    uint32_t ts_old; // previous timestamp for calculating interval
+    boolean first_sample = true;
+    boolean first_onepps = true;
+    uint32_t ts_samples_old; // previous timestamp for calculating interval
+    uint32_t ts_onepps_old;
     
     while (true) {
         // Busy waiting for data to be produced.
         // Safe since reading a single byte is atomic. 
-        while (rb.n == 0);
+        while (rb_samples.n == 0 && rb_onepps.n == 0);
 
-        // There is at least one data item in the ringbuffer.
-        uint32_t ts = rb.data[rb.tail];
-        rb.tail = ((rb.tail+1) & RINGBUFFERMOD);
-        // Disable interrupts for atomic read-modify-write (other reader/writer is ISR).
-        noInterrupts();
-        rb.n--;
-        interrupts();
+        if (rb_samples.n > 0) { 
+            // There is at least one sample in the ringbuffer.
+            uint32_t ts = rb_samples.data[rb_samples.tail];
+            rb_samples.tail = ((rb_samples.tail+1) & RINGBUFFERMOD);
+            // Disable interrupts for atomic read-modify-write (other reader/writer is ISR).
+            noInterrupts();
+            rb_samples.n--;
+            interrupts();
 
-        if (first_value) {
-            // First value -> cannot calculate interval
-            ts_old = ts;
-            first_value = false;
-            continue;
-        }
+            if (first_sample) {
+                // First value -> cannot calculate interval
+                ts_samples_old = ts;
+                first_sample = false;
+            } else {
+                // Not first value -> can calculate interval
+                uint32_t interval;
+                if (ts_samples_old > ts) {
+                    // Wrap around case
+                    interval = 0xffffffff-ts_samples_old + ts;
+                } else {
+                    interval = ts-ts_samples_old;
+                }
+                ts_samples_old = ts;
 
-        // Not first value -> can calculate interval
-        uint32_t interval;
-        if (ts_old > ts) {
-            // Wrap around case
-            interval = 0xffffffff-ts_old + ts;
-        } else {
-            interval = ts-ts_old;
-        }
-        ts_old = ts;
-
-        batch[nbatch++] = interval;
-        if (nbatch == BATCHSIZE) {
-            // Batch is complete -> send packet
+                batch[nbatch++] = interval;
+                if (nbatch == BATCHSIZE) {
+                    // Batch is complete -> send packet
                        
-            // Fill in packet header.
-            pkt_header_t *pkt_header = get_pkt_header(&pkt_samples);
-            pkt_header->type = PKTTYPE_SAMPLES;
-            pkt_header->payload_length = BATCHSIZE*sizeof(uint32_t);
-            
-            // Fill in packet trailer.
-            pkt_trailer_t *pkt_trailer = get_pkt_trailer(&pkt_samples);
-            crc.add(pkt_samples.buffer, sizeof(pkt_header_t)+pkt_header->payload_length);
-            pkt_trailer->crcsum = crc.getCRC();
+                    // Fill in packet header.
+                    pkt_header_t *pkt_header = get_pkt_header(&pkt_samples);
+                    pkt_header->type = PKTTYPE_SAMPLES;
+                    pkt_header->payload_length = BATCHSIZE*sizeof(uint32_t);
 
-            size_t pkt_len = sizeof(pkt_header_t) + sizeof(pkt_trailer_t) + pkt_header->payload_length;
-            send_packet_slip(pkt_samples.buffer, pkt_len);
+                    // Packet payload is already filled in (zero-copy; batch points to packet payload).
+                    
+                    // Fill in packet trailer.
+                    pkt_trailer_t *pkt_trailer = get_pkt_trailer(&pkt_samples);
+                    crc.add(pkt_samples.buffer, sizeof(pkt_header_t)+pkt_header->payload_length);
+                    pkt_trailer->crcsum = crc.getCRC();
+
+                    size_t pkt_len = sizeof(pkt_header_t) + sizeof(pkt_trailer_t) + pkt_header->payload_length;
+                    send_packet_slip(pkt_samples.buffer, pkt_len);
             
-            crc.reset();
-            nbatch = 0;
+                    crc.reset();
+                    nbatch = 0;
+                }
+            }
+        }
+
+        if (rb_onepps.n > 0) { 
+            // There is at least one 1-pps measurement in the ringbuffer.
+            uint32_t ts = rb_onepps.data[rb_onepps.tail];
+            rb_onepps.tail = ((rb_onepps.tail+1) & RINGBUFFERMOD);
+            // Disable interrupts for atomic read-modify-write (other reader/writer is ISR).
+            noInterrupts();
+            rb_onepps.n--;
+            interrupts();
+
+            if (first_onepps) {
+                // First value -> cannot calculate interval
+                ts_onepps_old = ts;
+                first_onepps = false;
+            } else {
+                // Not first value -> can calculate interval
+                uint32_t interval;
+                if (ts_onepps_old > ts) {
+                    // Wrap around case
+                    interval = 0xffffffff-ts_onepps_old + ts;
+                } else {
+                    interval = ts-ts_onepps_old;
+                }
+                ts_onepps_old = ts;
+
+                // Fill in packet header.
+                pkt_header_t *pkt_header = get_pkt_header(&pkt_onepps);
+                pkt_header->type = PKTTYPE_ONEPPS;
+                pkt_header->payload_length = sizeof(interval);
+
+                // Copy payload into packet.
+                uint32_t *payload = (uint32_t *) pkt_onepps.buffer;
+                *payload = interval;
+                
+                // Fill in packet trailer.
+                pkt_trailer_t *pkt_trailer = get_pkt_trailer(&pkt_onepps);
+                crc.add(pkt_onepps.buffer, sizeof(pkt_header_t)+pkt_header->payload_length);
+                pkt_trailer->crcsum = crc.getCRC();
+
+                size_t pkt_len = sizeof(pkt_header_t) + sizeof(pkt_trailer_t) + pkt_header->payload_length;
+                send_packet_slip(pkt_onepps.buffer, pkt_len);
+            
+                crc.reset();
+            }
         }
     }
 }

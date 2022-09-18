@@ -1,11 +1,13 @@
 #include <CRC16.h>
 
-#define RINGBUFFERSIZE 16
-#define RINGBUFFERMOD 0x0f
+// Ringbuffer with 128 entries.
+// Consumes less than 1 KB RAM and can buffer samples at about 50 Hz for more than 2 seconds. 
+#define RINGBUFFERSIZE 128  /* must be a power of two for fast modulo */
+#define RINGBUFFERMOD 0x7f  /* fast modulo RINGBUFFERSIZE through binary & */
 
 // Different packet types to transport different data.
 #define PKTTYPE_SAMPLES 0 /* samples packet */
-#define PKTTYPE_ONEPPS 1 /* 1-pps calibration packet */
+#define PKTTYPE_ONEPPS 1  /* 1-pps calibration packet */
 
 // Send sample packets with these many samples.
 #define BATCHSIZE 10
@@ -84,8 +86,16 @@ void setup()
     // + TC0->TC_CHANNEL[1]...
     // + etc.
     // We will use TC0, channel 0 (sometimes denoted as TC0) for sampling frequencies. 
-    // We will use TC2, channel 0 (sometime denoted as TC6) for sampling 1 pps calibration signals from GPS.
+    // We will use TC2, channel 0 (sometimes denoted as TC6) for sampling 1 pps calibration signals from GPS.
 
+    // TC is clocked through the Power Management Controller (PMC). 
+    // In order to write CMR below, we need to disable its write protection:
+    // Bits 8-31: Write Protection Key (WPKEY) 0x54494D 
+    // Bit 0: 0 for disabling write protection
+    // Note: seems to work without this. 
+    //REG_TC0_WPMR = 0x54494D00;
+    //pmc_set_writeprotect(false);
+    
     // We use TIOA0 (PB25, Arduino Due pin #2) as external trigger for wave sampling.
     // Set the pin to peripheral mode.
     // Disable PIO control of the pin via PIO Disable Register (PDR);
@@ -108,19 +118,14 @@ void setup()
     // PCER = Peripheral Clock Enable Register
     // For the PID number, refer to Table 9-1 (PID27 is TC0, Channel 0)
     PMC->PMC_PCER0 |= PMC_PCER0_PID27; 
-
+    //pmc_enable_periph_clk(ID_TC0);
+    
     // Enable peripheral clock for Timer Counter 2, Channel 0.
     // PCER = Peripheral Clock Enable Register
     // For the PID number, refer to Table 9-1 (PID 33 is TC2, Channel 0)
     PMC->PMC_PCER1 |= PMC_PCER1_PID33; 
-    
-    // TC is clocked through the Power Management Controller (PMC). 
-    // In order to write CMR below, we need to disable its write protection:
-    // Bits 8-31: Write Protection Key (WPKEY) 0x54494D 
-    // Bit 0: 0 for disabling write protection
-    // Note: seems to work without this. 
-    //REG_TC0_WPMR = 0x54494D00;
- 
+    //pmc_enable_periph_clk(ID_TC6);
+   
     // Disable clock through TC Clock Control Register (CCR) 
     // while configuring.  
     TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKDIS;                           
@@ -148,14 +153,14 @@ void setup()
 
     // Configure interrupts.
     NVIC_DisableIRQ(TC0_IRQn);
-    NVIC_DisableIRQ(TC2_IRQn);
+    NVIC_DisableIRQ(TC6_IRQn);
     NVIC_ClearPendingIRQ(TC0_IRQn); // clear pending interrupts
-    NVIC_ClearPendingIRQ(TC2_IRQn); // clear pending interrupts
+    NVIC_ClearPendingIRQ(TC6_IRQn); // clear pending interrupts
     NVIC_SetPriority(TC0_IRQn, 0); // TC interrupt has highest priority
-    NVIC_SetPriority(TC2_IRQn, 0); // TC interrupt has highest priority
+    NVIC_SetPriority(TC6_IRQn, 0); // TC interrupt has highest priority
     NVIC_SetPriority(SysTick_IRQn, 15); // sys-tick interrupts have lower priority
     NVIC_EnableIRQ(TC0_IRQn); // enable interrupts
-    NVIC_EnableIRQ(TC2_IRQn); // enable interrupts
+    NVIC_EnableIRQ(TC6_IRQn); // enable interrupts
 
     // To avoid triggering an overrun error on the first load of RA or RB,
     // we clear the status register and load RA and RB. 
@@ -178,18 +183,22 @@ void setup()
  */
 void die() 
 {
-    // Halt
-    while (1) {
-        // Signal error to user via fast-blinking LED.
+    /*
+    if (ledon)
         digitalWrite(LED_BUILTIN, HIGH);
-        delay(250);
-        digitalWrite(LED_BUILTIN, LOW); 
-        delay(250);
-    }
+    else
+        digitalWrite(LED_BUILTIN, LOW);
+      
+    // Halt
+    while (1);
+    */
+    
+    // Let it crash: reset to get back into a safe state quickly.
+    rstc_start_software_reset(RSTC);
 }
 
 /**
- * Interrupt handler for Timer Counter 0. 
+ * Interrupt handler for Timer Counter 0, Channel 0 (aka TC0).
  */
 void TC0_Handler() 
 {
@@ -201,7 +210,8 @@ void TC0_Handler()
     // Check for load overrun (loading at least twice in a row without reading).
     if (stat & TC_SR_LOVRS) {
         // Lost some values because ISR handling is too slow.
-        // This must never happen.
+        // This must never happen since it results in wrong interval measurements.
+        // Let it crash, reset, and get back into a safe state.
         die();
     }
 
@@ -211,16 +221,16 @@ void TC0_Handler()
         uint32_t ra = TC0->TC_CHANNEL[0].TC_RA;
         
         // Copy timestamp value to ring buffer.
-        // Reading rb.n is safe since reading a single byte is atomic.
+        // The interrupt routine has exclusive access to the ring buffer structure,
+        // and the following code block is effectively atomic. 
         if (rb_samples.n == RINGBUFFERSIZE) {
             // Consumer is too slow to process data produced here.
-            // This must never happen.
+            // This must never happen since it results in wrong interval measurements.
+            // Let it crash, reset, and get back into a safe state.
             die();
         }
         rb_samples.data[rb_samples.head] = ra;
         rb_samples.head = ((rb_samples.head+1) & RINGBUFFERMOD);
-        // Read-modify-write in the ISR is safe (atomic) since the ISR
-        // cannot be interrupted.
         rb_samples.n++;
 
         // Blink LED once per second.
@@ -238,7 +248,7 @@ void TC0_Handler()
 }
 
 /**
- * Interrupt handler for Timer Counter 0. 
+ * Interrupt handler for Timer Counter 2, Channel 0 (aka TC6).
  */
 void TC6_Handler() 
 {
@@ -250,7 +260,8 @@ void TC6_Handler()
     // Check for load overrun (loading at least twice in a row without reading).
     if (stat & TC_SR_LOVRS) {
         // Lost some values because ISR handling is too slow.
-        // This must never happen.
+        // This must never happen since it results in wrong interval measurements.
+        // Let it crash, reset, and get back into a safe state.
         die();
     }
 
@@ -260,16 +271,16 @@ void TC6_Handler()
         uint32_t ra = TC2->TC_CHANNEL[0].TC_RA;
         
         // Copy timestamp value to ring buffer.
-        // Reading rb.n is safe since reading a single byte is atomic.
+        // The interrupt routine has exclusive access to the ring buffer structure,
+        // and the following code block is effectively atomic. 
         if (rb_onepps.n == RINGBUFFERSIZE) {
             // Consumer is too slow to process data produced here.
-            // This must never happen.
+            // This must never happen since it results in wrong interval measurements.
+            // Let it crash, reset, and get back into a safe state.
             die();
         }
         rb_onepps.data[rb_onepps.head] = ra;
         rb_onepps.head = ((rb_onepps.head+1) & RINGBUFFERMOD);
-        // Read-modify-write in the ISR is safe (atomic) since the ISR
-        // cannot be interrupted.
         rb_onepps.n++;
     }
     
@@ -338,11 +349,13 @@ void loop()
         // Safe since reading a single byte is atomic. 
         while (rb_samples.n == 0 && rb_onepps.n == 0);
 
+        // Since n is a single byte, reading it is safe (atomic).
         if (rb_samples.n > 0) { 
             // There is at least one sample in the ringbuffer.
             uint32_t ts = rb_samples.data[rb_samples.tail];
             rb_samples.tail = ((rb_samples.tail+1) & RINGBUFFERMOD);
-            // Disable interrupts for atomic read-modify-write (other reader/writer is ISR).
+            // Get exclusive access to n, without concurrent access by interrupt routine
+            // (perform atomic read-modify-write on n).
             noInterrupts();
             rb_samples.n--;
             interrupts();
@@ -387,11 +400,13 @@ void loop()
             }
         }
 
+        // Since n is a single byte, reading it is safe (atomic).
         if (rb_onepps.n > 0) { 
             // There is at least one 1-pps measurement in the ringbuffer.
             uint32_t ts = rb_onepps.data[rb_onepps.tail];
             rb_onepps.tail = ((rb_onepps.tail+1) & RINGBUFFERMOD);
-            // Disable interrupts for atomic read-modify-write (other reader/writer is ISR).
+            // Get exclusive access to n, without concurrent access by interrupt routine
+            // (perform atomic read-modify-write on n).
             noInterrupts();
             rb_onepps.n--;
             interrupts();
@@ -417,7 +432,7 @@ void loop()
                 pkt_header->payload_length = sizeof(interval);
 
                 // Copy payload into packet.
-                uint32_t *payload = (uint32_t *) pkt_onepps.buffer;
+                uint32_t *payload = (uint32_t *) get_pkt_payload(&pkt_onepps);
                 *payload = interval;
                 
                 // Fill in packet trailer.

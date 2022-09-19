@@ -17,7 +17,7 @@ FILE *outfile = NULL;
 
 void print()
 {
-     printf("\rf_mains = %f Hz \t f_clock = %u Hz", avg, f_clk);
+     printf("\rf_mains = %.4f Hz \t f_clock = %u Hz", avg, f_clk);
      fflush(stdout);
 }
 

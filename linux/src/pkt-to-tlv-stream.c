@@ -110,7 +110,8 @@ int main(int argc, char *argv[])
 	       ERROR("Error while writing tlv to stdout");
 	       exit(-1);
 	  }
-
+	  fflush(stdout);
+	       
 	  // Each second write a wall-clock timestamp to roughly reference samples to wall-clock time.     
 	  struct timespec tspec;
 	  clock_gettime(CLOCK_REALTIME, &tspec);
@@ -125,6 +126,7 @@ int main(int argc, char *argv[])
 		    ERROR("Could not send wallclock timestamp");
 		    exit(-1);
 	       }
+	       fflush(stdout);
 	       tlast = tnow;
 	  }
      }

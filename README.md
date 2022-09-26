@@ -13,6 +13,8 @@ GPS Device <-------------------------------1-pps signal-------------------------
 
 As microcontroller, we use an ARDUINO DUE and its timer capture feature to precisely measure sine wave periods and the period of the reference 1-pps signal from GPS. 
 
+The transmission from the microcontroller to the computer (we use a Raspberry Pi) uses serial over USB, the SLIP protocol to send packets over a serial byte stream, and CRC for checking the integrity of packets.
+
 # Pipeline for Processing Stream Data
 
 A stream of data is processed in a pipeline of filters using the popular UNIX pipe concept.

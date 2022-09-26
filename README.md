@@ -21,7 +21,7 @@ A stream of data is processed in a pipeline of filters using the popular UNIX pi
 A filter reads its input from stdin and writes its output to stdout.
 Filters can be concatenated as required.
 
-* The `pkt-to-tlv-stream" application receives data from the microcontroller and acts as stream source. Use `>` to redirect the stream to a file. 
+* The `pkt-to-tlv-stream` application receives data from the microcontroller and acts as stream source. Use `>` to redirect the stream to a file. 
 * The `cat` application can be used to start a stream from a recorded file.
 * The `tee` application can be used to fork a data stream.
 * The application `sink-display` can display the values of a stream.

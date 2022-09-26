@@ -18,11 +18,11 @@ enum State {
 
 void usage(const char *app)
 {
-     fprintf(stderr, "USAGE: %s "
+     fprintf(stderr, "USAGE: %s \n"
 	     "-l : time specified as local time\n"
 	     "-u : time specified as UTC\n"
-	     "-s STARTTIME : include everything after this time (format see below)\n"
-	     "-e ENDTIME : include everything before this time (format see below)\n"
+	     "-s STARTTIME : include everything after and including this time (format see below)\n"
+	     "-e ENDTIME : include everything before and including this time (format see below)\n"
 	     "\n"
 	     "Time format (quoted string): year-month-day hour:minute:second\n"
 	     "year: yyyy \t month: 1-12 \t day: 1-31 \t hour: 0-23 \t minute: 0-59 \t second: 0-59 \n",
@@ -64,12 +64,12 @@ int main(int argc, char *argv[])
 
 
      if (strlen(starttime_arg) == 0) {
-	  fprintf(stderr, "Must specify start time\n");
+	  usage(argv[0]);
 	  exit(-1);
      }
 
      if (strlen(endtime_arg) == 0) {
-	  fprintf(stderr, "Must specify end time\n");
+	  usage(argv[0]);
 	  exit(-1);
      }
 
@@ -90,36 +90,69 @@ int main(int argc, char *argv[])
 	  fprintf(stderr, "Could not parse start time\n");
 	  exit(-1);
      }
-     // The result of both, mktime() and timegm(), is time since epoch in UTC.
      if (uselocaltime)
-	  endtime = mktime(&t); // tm defined as local time
+	  endtime = mktime(&t); // convert given local time to UTC
      else
-	  endtime = timegm(&t); // tm defined as UTC
+	  endtime = timegm(&t); // given time is UTC (just convert to time_t)
 
+     // The POSIX standard defines that time_t (starttime, endtime) is time in
+     // seconds since the Unix epoch. Therefore, we convert it to time in
+     // nano-seconds since Unix expoch as follows.
+     uint64_t tstartns = 1000000000ull*starttime;
+     uint64_t tendns = 1000000000ull*endtime;
+		    
      tlv_t tlv;
      enum State state = before;
-     while (state != after && read_tlv(&tlv, stdin) == 0) {
+     while (state != after) {
+	  if (read_tlv(&tlv, stdin) < 0) {
+	       if (feof(stdin)) {
+		    break;
+	       } else if (ferror(stdin)) {
+		    ERROR("Could not read TLV element from stdin");
+		    exit(-1);
+	       }
+	  }
+
 	  switch (state) {
 	  case before :
 	       if (tlv.type == TLV_TYPE_WALLCLOCKTIME) {
-		    // Check whether we have entered time window.
-		    // TODO
-		    // Check whether we have passed end time without entering time window.
-		    // TODO
+		    if (tlv.value.wallclocktime >= tstartns) {
+			 // Entered time window.
+			 state = within;
+		    }
+		    if (tlv.value.wallclocktime > tendns) {
+			 // ... and left time window.
+			 state = after;
+		    }
+		    if (state == within) {
+			 // Pass through packet within time window.
+			 if (write_tlv(&tlv, stdout) < 0) {
+			      ERROR("Could not write packet to stdout");
+			      exit(-1);
+			 }
+		    }
 	       } else {
 		    // Ignore all packets before start time.
 	       }
 	       break;
 	  case within :
 	       if (tlv.type == TLV_TYPE_WALLCLOCKTIME) {
-		    // Check whether we have left time window.
-		    // TODO
+		    if (tlv.value.wallclocktime > tendns) {
+			 // Left time window.
+			 state = after;
+		    } else {
+			 // Still within time window.
+			 if (write_tlv(&tlv, stdout) < 0) {
+			      ERROR("Could not write packet to stdout");
+			      exit(-1);
+			 }
+		    }
 	       } else {
 		    // Pass-through packet within time window.
 		    if (write_tlv(&tlv, stdout) < 0) {
 			 ERROR("Could not write packet to stdout");
 			 exit(-1);
-		    }		    
+		    }	    
 	       }
 	       break;
 	  case after :

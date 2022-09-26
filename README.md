@@ -11,6 +11,8 @@ Transformer --(sine wave)--> half-wave rectifier --(half sine wave)--> Schmitt-T
 GPS Device <-------------------------------1-pps signal---------------------------------------------------------
 ```
 
+As microcontroller, we use an ARDUINO DUE and its timer capture feature to precisely measure sine wave periods and the period of the reference 1-pps signal from GPS. 
+
 # Pipeline for Processing Stream Data
 
 A stream of data is processed in a pipeline of filters using the popular UNIX pipe concept.

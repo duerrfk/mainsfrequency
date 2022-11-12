@@ -39,6 +39,8 @@ int read_tlv(tlv_t *tlv, FILE *f)
      nread = fread(&tlv->length, sizeof(tlv->length), 1, f);
      if (nread != 1)
 	  return -1;
+     else if (tlv->length > sizeof(tlv->value.samples))
+	  return -1;
 
      nread = fread(&tlv->value, 1, tlv->length, f);
      if (nread != tlv->length)

@@ -110,6 +110,9 @@ int main(int argc, char *argv[])
 	       } else if (ferror(stdin)) {
 		    ERROR("Could not read TLV element from stdin");
 		    exit(-1);
+	       } else {
+		    ERROR("Could not read TLV element from stdin (corrupt file)");
+		    exit(-1);
 	       }
 	  }
 
@@ -161,6 +164,6 @@ int main(int argc, char *argv[])
 	       exit(-1);
 	  }
      }
-     
+
      return 0;
 }
